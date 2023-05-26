@@ -1,0 +1,138 @@
+#!/usr/bin/perl -w
+# -*-  perl -*-
+
+=head1 NAME
+
+=head1 APPLICABLE SYSTEMS
+
+=head1 CONFIGURATION
+
+=head1 USAGE
+
+Link this plugin to /etc/munin/plugins/ and restart the munin-node.
+Make sure the filenames end with _power, _temperature, _humidity when symlinking.
+
+=head1 MAGIC MARKERS
+
+  #%# family=auto
+  #%# capabilities=autoconf
+
+=head1 BUGS
+
+=head1 VERSION
+
+  $Id$
+
+=head1 AUTHOR
+
+ZUKERAN, shin
+
+=head1 LICENSE
+
+
+=cut
+
+use utf8;
+use strict;
+use warnings;
+use Munin::Plugin;
+use DBI;
+use YAML;
+use JSON;
+binmode(STDOUT, ":utf8");
+
+my $mode = ($ARGV[0] or "print");
+my $command = ($ARGV[1] or '');
+
+if ($0 =~ m!_(.+)$!){
+	$command = $1;
+}
+if ($command eq ''){
+    print "no (no place to monitor)\n";
+    exit 1;
+}
+
+if ($mode eq 'autoconf' ) {
+    print "yes\n";
+    exit 0;
+}
+
+if ($mode eq 'config' ) {
+    # The headers
+    print "graph_title Tuya $command\n";
+#    print "graph_args --upper-limit 100 -l 0\n";
+    print "graph_vlabel W\n"                       if ($command eq 'power');
+    print "graph_vlabel C\n"                       if ($command eq 'temperature');
+    print "graph_vlabel %\n"                       if ($command eq 'humidity');
+    print "graph_args --alt-autoscale --alt-y-grid\n";
+    print "graph_scale no\n";
+    print "graph_category environment\n";
+}
+if($mode eq 'config') {
+    if($command eq 'power'){
+	    print "pressure.label power\n";
+    }elsif($command eq 'temperature'){
+	    print "temperature.label temperature\n";
+    }elsif($command eq 'humidity'){
+	    print "humidity.label humidity\n";
+    }
+}
+
+my $db = DBI->connect('dbi:SQLite:/Link/To/home-assistant_v2.db','','');
+my $st;
+my %e2m;
+my %sids;
+my %attr;
+
+$st = $db->prepare('select * from states_meta;');
+$st->execute();
+while (my $row = $st->fetch){
+    my ($metadata_id, $entity_id) = @$row;
+    $e2m{$entity_id} = $metadata_id;
+}
+
+$st = $db->prepare('select * from statistics_meta;');
+$st->execute();
+while (my $row = $st->fetch){
+    my ($id,$statistic_id,$source,$unit_of_measurement,$has_mean,$has_sum,$name) = @$row;
+    $sids{$id} = $e2m{$statistic_id};
+}
+
+$st = $db->prepare('select * from state_attributes;');
+$st->execute();
+while (my $row = $st->fetch){
+    my ($attributes_id,$hash,$shared_attrs) = @$row;
+    my $sa_json = decode_json($shared_attrs);
+    next unless(defined($sa_json->{'friendly_name'}));
+    next if ($sa_json->{'friendly_name'} eq 'Temperature');
+    next if ($sa_json->{'friendly_name'} eq 'Humidity');
+    $sa_json->{'friendly_name'} =~ s/\s+\S+$//;
+    $attr{$attributes_id} = $sa_json;
+}
+if($mode eq 'config'){
+    foreach my $attributes_id (sort keys %attr){
+	next unless defined($attr{$attributes_id});
+	next unless defined($attr{$attributes_id}->{'device_class'});
+	next if $command ne $attr{$attributes_id}->{'device_class'};
+        print "$attr{$attributes_id}->{'device_class'}${attributes_id}.label $attr{$attributes_id}->{'friendly_name'}\n";
+    } 
+    exit 0;
+}
+
+foreach my $id (sort keys %sids){
+    $st = $db->prepare('select state_id,state,datetime(last_updated_ts,"unixepoch","localtime"),attributes_id,metadata_id from states where metadata_id=? order by state_id desc limit 1');
+    $st->execute($sids{$id});
+    while (my $row = $st->fetch){
+        my ($state_id,$state,$last_updated_ts,$attributes_id,$metadata_id) = @$row;
+	next if $command ne $attr{$attributes_id}->{'device_class'};
+	next unless defined($attr{$attributes_id});
+	next unless defined($attr{$attributes_id}->{'device_class'});
+	next if $command ne $attr{$attributes_id}->{'device_class'};
+        print "$attr{$attributes_id}->{'device_class'}${attributes_id}.value $state\n";
+    }
+}
+
+
+exit 0;
+
+# vim: ft=perl : sw=4 : ts=4 : et
