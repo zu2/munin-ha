@@ -1,1 +1,1 @@
-Read HomeAssistant database and draw graphs using munin.
+minin plugin to read HomeAssistant database.
